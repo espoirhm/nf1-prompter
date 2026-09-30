@@ -16,6 +16,7 @@
   --teal: #19a6a3;         /* deck teal: cues, progress */
   --teal-ink: #04201f;
   --btn: #26343a;          /* control buttons */
+  --rec: #ff5a4f;          /* microphone live */
   --warn: #ff8a7a;
   --f-read: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Consolas, monospace;
@@ -25,13 +26,18 @@
 :root[data-theme="light"] {
   --stage: #f7f9f9; --panel: #ffffff; --line: #d7e0e0;
   --ink: #0d1718; --ink-dim: #8a9898; --must: #9a5b00;
-  --teal: #007f7d; --teal-ink: #ffffff; --warn: #b3261e; --btn: #e4ecec;
+  --teal: #007f7d; --teal-ink: #ffffff; --warn: #b3261e; --btn: #e4ecec; --rec: #c62828;
   color-scheme: light;
 }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body { background: var(--stage); color: var(--ink); font-family: var(--f-read); margin: 0; overflow: hidden; -webkit-tap-highlight-color: transparent; }
-#app { height: 100%; height: 100dvh; display: grid; grid-template-rows: auto 1fr auto; grid-template-areas: "bar" "stage" "ctrl"; }
-.bar { grid-area: bar; } #stage { grid-area: stage; } .ctrl { grid-area: ctrl; }
+#app { height: 100%; height: 100dvh; display: grid; grid-template-rows: auto auto 1fr auto; grid-template-areas: "bar" "mic" "stage" "ctrl"; }
+.bar { grid-area: bar; } #stage { grid-area: stage; } .ctrl { grid-area: ctrl; } .micline { grid-area: mic; }
+.micline { display: flex; align-items: center; gap: 10px; padding: 6px 16px; background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0; }
+.micline #mic { min-height: 36px; padding: 4px 12px; font-size: 14px; white-space: nowrap; color: var(--ink-dim); }
+.micline #mic.live { color: var(--rec); border-color: var(--rec); }
+.micline #heard { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 
 /* 3-line "karaoke" view: previous / current / next, same size, current in yellow */
 .k3 #stage { display: flex; align-items: center; overflow: hidden; padding-block: 12px; }
@@ -108,7 +114,8 @@ button.primary { background: var(--teal); color: var(--teal-ink); border-color: 
   .slidetitle { font-size: 13px; }
   #stage { padding-top: 10px; }
   /* phone: controls sit at the top, under the slide line, clear of Safari's bottom toolbar */
-  #app { grid-template-rows: auto auto 1fr; grid-template-areas: "bar" "ctrl" "stage"; }
+  #app { grid-template-rows: auto auto auto 1fr; grid-template-areas: "bar" "ctrl" "mic" "stage"; }
+  .micline { padding: 6px 12px; }
   .ctrl { flex-direction: column; align-items: stretch; gap: 8px; padding: 8px 12px 10px; border-top: 0; border-bottom: 2px solid var(--teal); }
   .ctrl .main { width: 100%; }
   .ctrl .main button { flex: 1; min-height: 56px; font-size: 20px; }
@@ -128,6 +135,7 @@ button.primary { background: var(--teal); color: var(--teal-ink); border-color: 
     <span class="clock" id="clock"><span class="now" id="now">0:00</span> <span class="tgt" id="tgt"></span></span>
     <img class="thumb" id="thumb" alt="Current slide">
   </header>
+  <div class="micline" id="micline" hidden><button id="mic">○ 탭해서 다시 듣기</button><span id="heard"></span></div>
   <main id="stage" aria-live="polite"><div class="col" id="col"></div></main>
   <footer class="ctrl" id="ctrl">
     <div class="main">
@@ -221,11 +229,13 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     const L = Math.max(a.length, b.length);
     return L >= 4 && lev(a, b) <= (L >= 8 ? 2 : 1);
   }
-  // greedy alignment of heard words onto target words
+  const STOP = new Set('a an the and or of in on at to for with by from as is are was were be been it its this that these those we you i they he she can may so but if not also very more than then there here which who what when how do does has have had about into just like one some all each other only now let well our your their'.split(' '));
+  // greedy alignment of heard words onto target words; content words may re-sync further ahead after the recognizer drops a chunk
   function align(target, heard) {
     let p = 0, m = 0;
     for (const h of heard) {
-      for (let j = p; j < Math.min(target.length, p + 4); j++) {
+      const reach = STOP.has(h) ? 3 : 9;
+      for (let j = p; j < Math.min(target.length, p + reach); j++) {
         if (same(target[j], h)) { m++; p = j + 1; break; }
       }
     }
@@ -235,8 +245,12 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     const n = s.words.length; if (!n) return true;
     const { p, m } = align(s.words, heard);
     s._prog = n ? p / n : 1;
-    if (n <= 4) return p >= n - 1 && m >= Math.max(1, n - 2);
-    return (p >= n - 2 && m >= n * 0.5) || m >= n * 0.8;
+    // the sentence's last content words were just heard
+    const tail = s.words.filter(w => !STOP.has(w)).slice(-2);
+    const recent = heard.slice(-6);
+    const endHit = tail.some(t => recent.some(h => same(t, h)));
+    if (n <= 4) return p >= n - 1 || (endHit && m >= 1);
+    return (p >= n - 2 && m >= n * 0.4) || m >= n * 0.65 || (endHit && p >= n * 0.5);
   }
   // the speaker skipped ahead: the next sentence's opening words appear, in order, among the latest heard words
   function startsNext(heard) {
@@ -354,34 +368,57 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
 
   // ---------- voice mode ----------
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false, cut = { idx: 0, len: 0 }, carry = [], lastResults = [];
-  function resultWords(results) { const out = []; for (let i = 0; i < results.length; i++) out.push(results[i][0].transcript.split(/\s+/).map(norm).filter(Boolean)); return out; }
-  function heardNow() {
-    const h = carry.slice();
-    for (let i = cut.idx; i < lastResults.length; i++) h.push(...(i === cut.idx ? lastResults[i].slice(cut.len) : lastResults[i]));
-    return h;
+  // The whole session transcript is flattened into one word list; the current sentence hears everything after `cutCount`.
+  // (iPhone Safari keeps rewriting one growing result, so counting words is sturdier than tracking result indexes.)
+  let rec = null, listening = false, wantListen = false, allWords = [], cutCount = 0, carry = [], lastHeardAt = 0, rawTail = '';
+  function transcriptWords(results) { const out = []; let raw = ''; for (let i = 0; i < results.length; i++) { raw += ' ' + results[i][0].transcript; } rawTail = raw.trim().split(/\s+/).slice(-8).join(' '); raw.split(/\s+/).forEach(w => { const n = norm(w); if (n) out.push(n); }); return out; }
+  function heardNow() { if (cutCount > allWords.length) cutCount = allWords.length; return carry.concat(allWords.slice(cutCount)); }
+  function heardCut() { carry = []; cutCount = allWords.length; }
+  function micUI() {
+    const on = mode === 'voice' && running;
+    $('micline').hidden = !on;
+    if (!on) return;
+    const b = $('mic');
+    b.classList.toggle('live', listening);
+    b.textContent = listening ? '● 듣는 중' : '○ 탭해서 다시 듣기';
+    $('heard').textContent = rawTail ? '… ' + rawTail : (listening ? '말씀하시면 여기에 들린 단어가 보여요' : '');
   }
-  function heardCut() { carry = []; const n = lastResults.length; cut = n ? { idx: n - 1, len: lastResults[n - 1].length } : { idx: 0, len: 0 }; }
+  function newRec() {
+    const r = new SR(); r.lang = 'en-US'; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    r.onstart = () => { listening = true; micUI(); };
+    r.onresult = (e) => { allWords = transcriptWords(e.results); lastHeardAt = Date.now(); micUI(); onHeard(heardNow()); };
+    r.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') { wantListen = false; voiceFail('이 화면에서는 마이크를 쓸 수 없어요. 자동 모드로 바꿨어요.'); }
+    };
+    r.onend = () => {
+      listening = false;
+      if (wantListen && running && mode === 'voice') {
+        carry = heardNow(); allWords = []; cutCount = 0;
+        setTimeout(() => { if (wantListen && !listening) tryListen(); }, 250);
+      }
+      micUI();
+    };
+    return r;
+  }
+  function tryListen() { try { if (rec) { rec.onend = null; try { rec.abort(); } catch (e) {} } rec = newRec(); rec.start(); } catch (err) { listening = false; micUI(); } }
   function voiceStart() {
     if (!SR) { voiceFail('이 브라우저는 음성 인식을 지원하지 않아요. 자동 모드로 바꿨어요.'); return; }
-    try {
-      rec = new SR(); rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
-      rec.onresult = (e) => {
-        lastResults = resultWords(e.results);
-        onHeard(heardNow());
-      };
-      rec.onerror = (e) => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') { listening = false; voiceFail('이 화면에서는 마이크를 쓸 수 없어요. 자동 모드로 바꿨어요.'); }
-      };
-      rec.onend = () => { if (listening && running && mode === 'voice') { carry = heardNow(); lastResults = []; cut = { idx: 0, len: 0 }; try { rec.start(); } catch (err) {} } };
-      lastResults = []; cut = { idx: 0, len: 0 }; carry = [];
-      rec.start(); listening = true; setStatus('듣는 중', true);
-    } catch (err) { voiceFail('음성 인식을 시작하지 못했어요. 자동 모드로 바꿨어요.'); }
+    wantListen = true; allWords = []; cutCount = 0; carry = []; rawTail = ''; lastHeardAt = 0;
+    tryListen(); micUI();
   }
-  function voiceStop() { listening = false; if (rec) { try { rec.abort(); } catch (e) {} rec = null; } }
+  function voiceStop() { wantListen = false; listening = false; if (rec) { rec.onend = null; try { rec.abort(); } catch (e) {} rec = null; } micUI(); }
   function voiceFail(msg) { voiceStop(); toast(msg); setMode('pace'); }
+  // watchdog: iPhone ends recognition on its own; bring it back
+  setInterval(() => { if (wantListen && running && mode === 'voice' && !listening) tryListen(); }, 2500);
+  // pause check: the speaker stopped talking after most of the sentence
+  setInterval(() => {
+    if (!(wantListen && running && mode === 'voice') || !lastHeardAt) return;
+    const s = S[pos], h = heardNow(); if (!h.length) return;
+    doneReading(s, h);
+    if ((s._prog || 0) >= 0.7 && Date.now() - lastHeardAt > 1500 && pos < S.length - 1) { lastHeardAt = 0; go(pos + 1, true); }
+  }, 300);
   // test hook: feed recognized text without a microphone
-  window.__prompterFeed = (text) => { lastResults.push(text.split(/\s+/).map(norm).filter(Boolean)); onHeard(heardNow()); return { slide: DATA[S[pos].si].n, k: S[pos].k }; };
+  window.__prompterFeed = (text) => { text.split(/\s+/).forEach(w => { const n = norm(w); if (n) allWords.push(n); }); lastHeardAt = Date.now(); onHeard(heardNow()); return { slide: DATA[S[pos].si].n, k: S[pos].k }; };
 
   // ---------- run control ----------
   async function wake() { try { if ('wakeLock' in navigator) window.__wl = await navigator.wakeLock.request('screen'); } catch (e) {} }
@@ -405,6 +442,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     $('wpmbox').hidden = m !== 'pace';
     if (was) { if (m === 'pace') { paceStart(); setStatus('자동 진행', true); } else if (m === 'voice') voiceStart(); else setStatus('탭으로 넘기기', true); }
     else setStatus('', false);
+    micUI();
   }
   function setStatus(t, on) { const e = $('status'); e.textContent = t; e.classList.toggle('on', !!on); }
   let toastT; function toast(t) { const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => e.hidden = true, 4000); }
@@ -419,6 +457,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
   $('faster').onclick = () => { wpm = Math.min(180, wpm + 10); $('wpm').textContent = wpm; store.set('wpm', wpm); if (running && mode === 'pace') paceStart(); };
   $('font').onclick = () => { const sizes = [26, 30, 34, 40, 48]; size = sizes[(sizes.indexOf(size) + 1) % sizes.length] || 34; document.documentElement.style.setProperty('--size', size + 'px'); store.set('size', size); render(); };
   $('theme').onclick = () => { const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = t; store.set('theme', t); };
+  $('mic').onclick = () => { if (!listening) { wantListen = true; tryListen(); } };
   $('view').onclick = () => { view = view === 'k3' ? 'all' : 'k3'; store.set('view', view); applyView(); renderedSlide = -1; render(); };
   $('more').onclick = () => { const open = $('ctrl').classList.toggle('open'); $('more').setAttribute('aria-expanded', String(open)); $('more').textContent = open ? '닫기' : '설정'; };
   $('slides').onclick = () => { $('list').hidden = false; };
