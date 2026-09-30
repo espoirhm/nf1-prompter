@@ -41,8 +41,9 @@ body { background: var(--stage); color: var(--ink); font-family: var(--f-read); 
 
 /* 3-line "karaoke" view: previous / current / next, same size, current in yellow */
 .k3 #stage { display: flex; align-items: center; overflow: hidden; padding-block: 12px; }
+.k3 #stage.k3scroll { align-items: flex-start; overflow-y: auto; }
 .k3 .col { width: 100%; gap: 0.9em; }
-.k3 .s, .k3 .s.cur { font-size: calc(var(--size) * 0.8); line-height: 1.45; }
+.k3 .s, .k3 .s.cur { font-size: calc(var(--size) * 0.8 * var(--k3s, 1)); line-height: 1.45; transition: none; }
 .k3 .s { color: var(--ink-dim); opacity: .75; }
 .k3 .s.cur { color: var(--must); opacity: 1; }
 .k3 .s.cur b { color: var(--must); }
@@ -188,7 +189,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
   let pos = Math.min(hotData.pos ?? store.get('pos', 0), S.length - 1);
   let mode = store.get('mode', 'pace');
   let wpm = store.get('wpm', 110);
-  let size = store.get('size', 34);
+  let size = store.get('size', window.matchMedia('(max-width: 560px)').matches ? 26 : 34);   // phones start smaller
   let view = store.get('view', window.matchMedia('(max-width: 560px)').matches ? 'k3' : 'all');
   function applyView() { document.body.classList.toggle('k3', view === 'k3'); const b = $('view'); if (b) b.textContent = view === 'k3' ? '전체 보기' : '3줄 보기'; }
   let running = false;
@@ -278,22 +279,54 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     $('slideno').textContent = sl.n + ' / ' + DATA.length;
     $('slidetitle').textContent = sl.title || 'Slide ' + sl.n;
     $('thumb').src = 'img/s' + sl.n + '.jpg';
-    const col = $('col'); col.innerHTML = '';
-    const line = (x, cls) => {
-      const p = document.createElement('p'); p.className = 's ' + cls; p.style.margin = '0';
-      let tag = '';
-      if (cls === 'upnext' && x.si !== s.si) tag = '<span class="nexttag">▶ 다음 슬라이드 ' + DATA[x.si].n + '</span>';
-      p.innerHTML = tag + x.html; col.appendChild(p); return p;
-    };
-    if (S[pos - 1] && S[pos - 1].si === s.si) line(S[pos - 1], 'done');
-    if (s.cue) { const c = document.createElement('div'); c.className = 'cue' + (running ? ' flash' : ''); c.textContent = s.cue; col.appendChild(c); }
-    line(s, 'cur');
-    const m = document.createElement('div'); m.className = 'meter'; m.id = 'meter'; m.innerHTML = '<i></i>'; col.appendChild(m);
-    if (S[pos + 1]) line(S[pos + 1], 'upnext');
+    const col = $('col'); col.innerHTML = ''; col.style.setProperty('--k3s', '1');
+    // always three sentences: previous, current, next — across slide boundaries too;
+    // at the very start / end of the talk the window shifts so three lines are still shown
+    let first = Math.max(0, pos - 1);
+    if (first + 2 > S.length - 1) first = Math.max(0, S.length - 3);
+    const nodes = [];
+    for (let i = first; i <= Math.min(S.length - 1, first + 2); i++) {
+      const x = S[i];
+      const cls = i < pos ? 'done' : (i === pos ? 'cur' : 'upnext');
+      if (i === pos && x.cue) { const c = document.createElement('div'); c.className = 'cue' + (running ? ' flash' : ''); c.textContent = x.cue; col.appendChild(c); }
+      const p = document.createElement('p'); p.className = 's ' + cls; p.style.margin = '0'; p.dataset.i = i;
+      const tag = x.si !== s.si ? '<span class="nexttag">' + (i < pos ? '◀ 이전 슬라이드 ' : '▶ 다음 슬라이드 ') + DATA[x.si].n + '</span>' : '';
+      p.innerHTML = tag + x.html; col.appendChild(p); nodes.push(p);
+      p.addEventListener('click', () => go(i));
+      if (i === pos) { const m = document.createElement('div'); m.className = 'meter'; m.id = 'meter'; m.innerHTML = '<i></i>'; col.appendChild(m); }
+    }
+    fitK3(nodes);
     $('tgt').textContent = '/ 목표 ' + fmt(PLAN[s.si]);
     store.set('pos', pos);
     tick();
   }
+  // keep every shown line fully visible: if three lines do not fit, drop the line after the
+  // current one (previous + current stay together), then shrink the text a little,
+  // and only as a last resort drop the previous line
+  function fitK3(nodes) {
+    const st = $('stage'), col = $('col');
+    st.classList.remove('k3scroll');
+    const fits = () => col.scrollHeight <= st.clientHeight - 24;
+    const setK = (k) => col.style.setProperty('--k3s', String(k));
+    const cur = nodes.find(n => +n.dataset.i === pos);
+    // the line kept together with the current one: the previous sentence (or the next one at the very start)
+    const partner = nodes.find(n => +n.dataset.i === pos - 1) || nodes.find(n => +n.dataset.i === pos + 1);
+    const extras = nodes.filter(n => n !== cur && n !== partner)
+      .sort((a, b) => Math.abs(+b.dataset.i - pos) - Math.abs(+a.dataset.i - pos));   // farthest first
+    setK(1);
+    if (fits()) return;                                          // 1) three lines, normal size
+    for (let k = 0.95; k >= 0.85; k = +(k - 0.05).toFixed(2)) { setK(k); if (fits()) return; }   // 2) three lines, slightly smaller
+    setK(1);
+    while (extras.length) { extras.shift().remove(); if (fits()) return; }   // 3) long sentence: previous + current
+    for (let k = 0.94; k >= 0.7; k = +(k - 0.06).toFixed(2)) { setK(k); if (fits()) return; }   //    ... a bit smaller
+    if (partner) partner.remove();                               // 4) current sentence alone, as large as fits
+    for (let k = 1; k >= 0.5; k = +(k - 0.05).toFixed(2)) { setK(k); if (fits()) return; }
+    st.classList.add('k3scroll');                                // 5) still too long: let it scroll
+  }
+  let refitT = null;
+  function refit() { clearTimeout(refitT); refitT = setTimeout(() => { if (view === 'k3') renderK3(); }, 120); }
+  if (window.ResizeObserver) new ResizeObserver(refit).observe(document.getElementById('stage'));
+  window.addEventListener('resize', refit);
   function render() {
     if (view === 'k3') return renderK3();
     const s = S[pos], sl = DATA[s.si];
@@ -306,7 +339,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
       sl.items.forEach((it, k) => {
         if (it.cue) { const c = document.createElement('div'); c.className = 'cue dim'; c.dataset.k = k; c.textContent = it.cue; col.appendChild(c); }
         const p = document.createElement('p'); p.className = 's'; p.style.margin = '0'; p.dataset.k = k; p.innerHTML = it.html;
-        p.addEventListener('click', (e) => { e.stopPropagation(); go(S.findIndex(x => x.si === s.si && x.k === k)); });
+        p.addEventListener('click', () => { go(S.findIndex(x => x.si === s.si && x.k === k)); });
         col.appendChild(p);
       });
       const m = document.createElement('div'); m.className = 'meter'; m.id = 'meter'; m.innerHTML = '<i></i>'; col.appendChild(m);
@@ -469,8 +502,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     b.onclick = () => { $('list').hidden = true; go(S.findIndex(x => x.si === si)); };
     li.appendChild(b); ol.appendChild(li);
   });
-  // tap zones on the script: left third = back, right two-thirds = forward (sentence taps handled above)
-  $('stage').addEventListener('click', (e) => { const x = e.clientX / window.innerWidth; x < 0.33 ? prev() : next(); });
+  // no tap-anywhere navigation: tapping a sentence jumps to that sentence (handled where the lines are drawn)
   let sx = null; $('stage').addEventListener('touchstart', (e) => { sx = e.touches[0].clientX; }, { passive: true });
   $('stage').addEventListener('touchend', (e) => { if (sx == null) return; const dx = e.changedTouches[0].clientX - sx; sx = null; if (Math.abs(dx) > 60) { dx < 0 ? next() : prev(); e.preventDefault(); } });
   document.addEventListener('keydown', (e) => {
