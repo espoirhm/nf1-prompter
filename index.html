@@ -45,7 +45,9 @@ body { background: var(--stage); color: var(--ink); font-family: var(--f-read); 
 .k3 .histbox { display: flex; flex-direction: column; gap: 0.5em; padding-top: 4px; }
 .k3 .s.hist { font-size: calc(var(--size) * 0.7); line-height: 1.4; color: var(--ink-dim); opacity: .7; transition: none; }
 .k3 .s.hist b { color: inherit; }
-.k3 .histtag { font-family: var(--f-mono); font-size: 11px; color: var(--teal); opacity: .8; margin-top: 4px; }
+.k3 .histtag { font-family: var(--f-mono); font-size: 12px; color: var(--teal); opacity: .85; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.k3 #hist { padding-bottom: 12px; }     /* keeps the extra lines just out of sight while the three lines are shown */
+.k3 #ahead { padding-top: 12px; padding-bottom: 8px; }
 .k3 .core { display: flex; flex-direction: column; justify-content: center; }
 .k3 .coreIn { display: flex; flex-direction: column; gap: 0.9em; }
 .k3 .s, .k3 .s.cur { font-size: calc(var(--size) * 0.8 * var(--k3s, 1)); line-height: 1.45; transition: none; }
@@ -271,7 +273,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     const done = doneReading(s, h);
     const m = $('meter'); if (m) m.firstChild.style.width = Math.round((s._prog || 0) * 100) + '%';
     if ((done || startsNext(h)) && pos < S.length - 1) {
-      go(pos + 1, true);
+      autoGo(pos + 1);
       if (!done) carry = h.slice(-8);
     }
   }
@@ -284,31 +286,25 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     $('slideno').textContent = sl.n + ' / ' + DATA.length;
     $('slidetitle').textContent = sl.title || 'Slide ' + sl.n;
     $('thumb').src = 'img/s' + sl.n + '.jpg';
-    // a finger is holding the text pulled down: redraw, but do not yank the view back
-    const keep = touching && peeking(), keepTop = $('stage').scrollTop;
-    clearTimeout(peekT);
-    const st = $('stage'), col = $('col'); col.innerHTML = '';
+    const st = $('stage'), col = $('col');
+    // the text is pulled and someone is reading it (finger on it, or the talk moved on by itself):
+    // redraw, but keep the same sentence where it was instead of yanking the view back
+    const keep = peeking() && !snapping && (touching || autoNav);
+    const anchor = keep ? lineAtTop() : null, keepTop = st.scrollTop;
+    if (!keep) disarm();
+    col.innerHTML = '';
     // always three sentences: previous, current, next — across slide boundaries too;
     // at the very start / end of the talk the window shifts so three lines are still shown
     let first = Math.max(0, pos - 1);
     if (first + 2 > S.length - 1) first = Math.max(0, S.length - 3);
-    // earlier sentences sit above the three lines: pull the text down to read them
-    if (first > 0) {
-      const hist = document.createElement('div'); hist.className = 'histbox'; hist.id = 'hist';
-      let lastSi = -1;
-      for (let i = Math.max(0, first - HISTORY); i < first; i++) {
-        const x = S[i];
-        if (x.si !== lastSi) { const t = document.createElement('span'); t.className = 'histtag'; t.textContent = '슬라이드 ' + DATA[x.si].n; hist.appendChild(t); lastSi = x.si; }
-        const p = document.createElement('p'); p.className = 's hist'; p.style.margin = '0'; p.innerHTML = x.html;
-        p.addEventListener('click', () => go(i)); hist.appendChild(p);
-      }
-      col.appendChild(hist);
-    }
+    const last = Math.min(S.length - 1, first + 2);
+    // earlier sentences sit above the three lines (pull the text down), later ones below (push it up)
+    if (first > 0) col.appendChild(extraLines('hist', Math.max(0, first - AROUND), first - 1, -1));
     const core = document.createElement('div'); core.className = 'core'; core.id = 'core';
     const coreIn = document.createElement('div'); coreIn.className = 'coreIn'; coreIn.id = 'coreIn';
     core.appendChild(coreIn); col.appendChild(core);
     const nodes = [];
-    for (let i = first; i <= Math.min(S.length - 1, first + 2); i++) {
+    for (let i = first; i <= last; i++) {
       const x = S[i];
       const cls = i < pos ? 'done' : (i === pos ? 'cur' : 'upnext');
       if (i === pos && x.cue) { const c = document.createElement('div'); c.className = 'cue' + (running ? ' flash' : ''); c.textContent = x.cue; coreIn.appendChild(c); }
@@ -318,12 +314,43 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
       p.addEventListener('click', () => go(i));
       if (i === pos) { const m = document.createElement('div'); m.className = 'meter'; m.id = 'meter'; m.innerHTML = '<i></i>'; coreIn.appendChild(m); }
     }
+    if (last < S.length - 1) col.appendChild(extraLines('ahead', last + 1, Math.min(S.length - 1, last + AROUND), S[last].si));
     core.style.minHeight = Math.max(0, st.clientHeight - 24) + 'px';
     fitK3(nodes);
-    st.scrollTop = keep ? keepTop : coreTop();
+    ignoreScrollUntil = Date.now() + 200;
+    if (keep) {
+      const p = anchor && col.querySelector('.s[data-i="' + anchor.i + '"]');
+      st.scrollTop = p ? st.scrollTop + (p.getBoundingClientRect().top - st.getBoundingClientRect().top) - anchor.off : keepTop;
+      if (!touching && !peekT) armReturn();
+    } else st.scrollTop = coreTop();
     $('tgt').textContent = '/ 목표 ' + fmt(PLAN[s.si]);
     store.set('pos', pos);
     tick();
+  }
+  // dimmed sentences above / below the three lines; tapping one makes it the current (yellow) sentence
+  function extraLines(id, from, to, si0) {
+    const box = document.createElement('div'); box.className = 'histbox'; box.id = id;
+    let lastSi = si0;
+    for (let i = from; i <= to; i++) {
+      const x = S[i];
+      if (x.si !== lastSi) {
+        const t = document.createElement('span'); t.className = 'histtag';
+        t.textContent = '슬라이드 ' + DATA[x.si].n + (DATA[x.si].title ? ' · ' + DATA[x.si].title : '');
+        box.appendChild(t); lastSi = x.si;
+      }
+      const p = document.createElement('p'); p.className = 's hist'; p.style.margin = '0'; p.dataset.i = i; p.innerHTML = x.html;
+      p.addEventListener('click', () => go(i)); box.appendChild(p);
+    }
+    return box;
+  }
+  // the first sentence showing at the top of the stage, and how far below the top it sits
+  function lineAtTop() {
+    const st = $('stage'), top = st.getBoundingClientRect().top;
+    for (const p of $('col').querySelectorAll('.s[data-i]')) {
+      const r = p.getBoundingClientRect();
+      if (r.bottom > top + 1) return { i: +p.dataset.i, off: r.top - top };
+    }
+    return null;
   }
   // keep every shown line fully visible: if three lines do not fit, drop the line after the
   // current one (previous + current stay together), then shrink the text a little,
@@ -347,26 +374,40 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     for (let k = 1; k >= 0.5; k = +(k - 0.05).toFixed(2)) { setK(k); if (fits()) return; }
     // 5) still too long: the stage scrolls, so the rest can be read by pushing the text up
   }
-  // ---------- pull down to read earlier sentences ----------
-  const HISTORY = 8;          // sentences kept above the three lines
-  let peekT = null, touching = false;
+  // ---------- pull the text down / push it up to read earlier / later sentences ----------
+  const AROUND = 12;          // sentences kept above and below the three lines
+  let peekT = null, touching = false, snapping = false, autoNav = false, ignoreScrollUntil = 0;
   function coreTop() {
     const c = document.getElementById('core'), st = $('stage');
     return c ? Math.max(0, c.offsetTop - parseFloat(getComputedStyle(st).paddingTop || '0')) : 0;
   }
-  function peeking() { return view === 'k3' && $('stage').scrollTop < coreTop() - 4; }
+  // room to scroll inside the three lines themselves (only when the current sentence is longer than the screen)
+  function coreSpan() { const c = document.getElementById('core'); return c ? Math.max(0, c.offsetHeight - ($('stage').clientHeight - 24)) : 0; }
+  function peeking() {
+    if (view !== 'k3' || !document.getElementById('core')) return false;
+    const t = $('stage').scrollTop, c = coreTop();
+    return t < c - 4 || t > c + coreSpan() + 4;
+  }
   function snapBack() {
     if (view !== 'k3') return;
-    const st = $('stage'), top = coreTop();
-    st.scrollTo({ top, behavior: 'smooth' });
+    const st = $('stage'); snapping = true;
+    st.scrollTo({ top: coreTop(), behavior: 'smooth' });
     // if the smooth scroll did not get there (e.g. the page was not drawing), jump
-    setTimeout(() => { if (!touching && view === 'k3' && Math.abs(st.scrollTop - coreTop()) > 4) st.scrollTop = coreTop(); }, 900);
+    setTimeout(() => { snapping = false; if (!touching && peeking()) st.scrollTop = coreTop(); }, 900);
   }
-  // after the finger lets go, earlier sentences stay in view for a few seconds, then the three lines come back
-  function schedulePeekReturn() { clearTimeout(peekT); if (peeking()) peekT = setTimeout(() => { if (!touching) snapBack(); }, 5000); }
-  $('stage').addEventListener('touchstart', () => { touching = true; clearTimeout(peekT); }, { passive: true });
-  $('stage').addEventListener('touchend', () => { touching = false; schedulePeekReturn(); }, { passive: true });
-  $('stage').addEventListener('scroll', () => { if (!touching) schedulePeekReturn(); }, { passive: true });
+  // after the finger lets go, the pulled text stays for a few seconds, then the three lines come back
+  function armReturn() { clearTimeout(peekT); peekT = setTimeout(() => { peekT = null; if (!touching && peeking()) snapBack(); }, 5000); }
+  function disarm() { clearTimeout(peekT); peekT = null; }
+  const letGo = () => { touching = false; if (peeking()) armReturn(); };
+  $('stage').addEventListener('touchstart', () => { touching = true; disarm(); }, { passive: true });
+  $('stage').addEventListener('touchend', letGo, { passive: true });
+  $('stage').addEventListener('touchcancel', letGo, { passive: true });
+  $('stage').addEventListener('scroll', () => {
+    if (touching || snapping || Date.now() < ignoreScrollUntil) return;   // finger still on it, or our own scrolling
+    if (peeking()) armReturn(); else disarm();
+  }, { passive: true });
+  // the talk moved on by itself (timer or voice): like go(), but a pulled view stays where it is
+  function autoGo(i) { autoNav = true; try { go(i, true); } finally { autoNav = false; } }
   let refitT = null;
   function refit() {
     clearTimeout(refitT);
@@ -440,7 +481,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
   function paceStart() {
     paceStop(); if (!running || mode !== 'pace') return;
     paceDur = sentenceSeconds(S[pos]) * 1000; paceT0 = Date.now();
-    paceTimer = setTimeout(() => { if (pos < S.length - 1) { go(pos + 1); } else stop(); }, paceDur);
+    paceTimer = setTimeout(() => { if (pos < S.length - 1) { autoGo(pos + 1); } else stop(); }, paceDur);
     const bar = () => { const m = $('meter'); if (m) m.firstChild.style.width = Math.min(100, (Date.now() - paceT0) / paceDur * 100) + '%'; paceRaf = requestAnimationFrame(bar); };
     bar();
   }
@@ -495,7 +536,7 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH Noon Lecture 0 Neurofibromatosis typ
     if (!(wantListen && running && mode === 'voice') || !lastHeardAt) return;
     const s = S[pos], h = heardNow(); if (!h.length) return;
     doneReading(s, h);
-    if ((s._prog || 0) >= 0.7 && Date.now() - lastHeardAt > 1500 && pos < S.length - 1) { lastHeardAt = 0; go(pos + 1, true); }
+    if ((s._prog || 0) >= 0.7 && Date.now() - lastHeardAt > 1500 && pos < S.length - 1) { lastHeardAt = 0; autoGo(pos + 1); }
   }, 300);
   // test hook: feed recognized text without a microphone
   window.__prompterFeed = (text) => { text.split(/\s+/).forEach(w => { const n = norm(w); if (n) allWords.push(n); }); lastHeardAt = Date.now(); onHeard(heardNow()); return { slide: DATA[S[pos].si].n, k: S[pos].k }; };
