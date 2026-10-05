@@ -193,14 +193,15 @@ window.NF1_SCRIPT=[{"n":1,"title":"2026 MGH AM Lecture Radiologic approach to th
   };
   const hot = window.claude && window.claude.hot;
   const hotData = (hot && hot.data) || {};
-  let pos = Math.min(hotData.pos ?? store.get('pos', 0), S.length - 1);
+  // every fresh open starts at the first sentence with the clock at 0:00 (only a live update of an open page keeps its place)
+  let pos = Math.min(hotData.pos ?? 0, S.length - 1);
   let mode = store.get('mode', 'pace');
   let wpm = store.get('wpm', 110);
   let size = store.get('size', window.matchMedia('(max-width: 560px)').matches ? 26 : 34);   // phones start smaller
   let view = store.get('view', window.matchMedia('(max-width: 560px)').matches ? 'k3' : 'all');
   function applyView() { document.body.classList.toggle('k3', view === 'k3'); const b = $('view'); if (b) b.textContent = view === 'k3' ? '전체 보기' : '3줄 보기'; }
   let running = false;
-  let t0 = null, elapsedBefore = store.get('elapsed', 0);
+  let t0 = null, elapsedBefore = 0;
   if (hot && hot.snapshot) hot.snapshot(() => ({ pos }));
   document.documentElement.dataset.theme = store.get('theme', 'dark');
   document.documentElement.style.setProperty('--size', size + 'px');
